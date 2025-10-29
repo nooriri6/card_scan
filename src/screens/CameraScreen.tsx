@@ -10,7 +10,8 @@ import {
   Image,
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
-import ViewShot from 'react-native-view-shot';
+import * as VideoThumbnails from 'expo-video-thumbnails';
+import * as FileSystem from 'expo-file-system';
 import { detectCardEdges, cropAndCorrectPerspective } from '../utils/imageProcessing';
 import { saveCardImage } from '../utils/storage';
 import { processImageForDetection, analyzeCardPresenceAndChange } from '../utils/cardDetection';
@@ -19,11 +20,13 @@ const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 const ROI_WIDTH_RATIO = 0.8;
 const ROI_HEIGHT_RATIO = 0.6;
-const DETECTION_INTERVAL = 400;
-const EDGE_DENSITY_THRESHOLD = 0.08;
+const DETECTION_INTERVAL = 1300;
+const VIDEO_DURATION_MS = 1200;
+const THUMBNAIL_TIME_MS = 600;
+const EDGE_DENSITY_THRESHOLD = 0.05;
 const HAMMING_THRESHOLD = 15;
-const STABILITY_FRAMES_PRESENT = 3;
-const STABILITY_FRAMES_CHANGED = 2;
+const STABILITY_FRAMES_PRESENT = 2;
+const STABILITY_FRAMES_CHANGED = 1;
 const COOLDOWN_MS = 1000;
 
 type DetectionState = 'Idle' | 'CandidatePresent' | 'CaptureOnce' | 'WaitForChange';
@@ -42,14 +45,15 @@ export default function CameraScreen({ onNavigateToGallery }: CameraScreenProps)
     edgeDensity: 0,
     hammingDistance: 0,
     stabilityCounter: 0,
+    snapshotUri: null as string | null,
   });
 
   const cameraRef = useRef<CameraView>(null);
-  const viewShotRef = useRef<ViewShot>(null);
   const detectionStateRef = useRef<DetectionState>('Idle');
   const lastCapturedHashRef = useRef<string | null>(null);
   const stabilityCounterRef = useRef(0);
   const isSamplingRef = useRef(false);
+  const isRecordingRef = useRef(false);
   const detectionIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const cooldownRef = useRef<NodeJS.Timeout | null>(null);
   const isInCooldownRef = useRef(false);
@@ -84,15 +88,17 @@ export default function CameraScreen({ onNavigateToGallery }: CameraScreenProps)
     state: DetectionState,
     edgeDensity: number,
     hammingDistance: number,
-    stabilityCounter: number
+    stabilityCounter: number,
+    snapshotUri: string | null = null
   ) => {
+    console.log('[DEBUG]', { state, edgeDensity, hammingDistance, stabilityCounter, snapshotUri });
     if (debugMode) {
-      setDebugInfo({ state, edgeDensity, hammingDistance, stabilityCounter });
+      setDebugInfo({ state, edgeDensity, hammingDistance, stabilityCounter, snapshotUri });
     }
   };
 
   const captureHighQualityCard = async () => {
-    if (!cameraRef.current || isInCooldownRef.current) return;
+    if (!cameraRef.current || isInCooldownRef.current || isRecordingRef.current) return;
 
     try {
       const photo = await cameraRef.current.takePictureAsync({
@@ -122,25 +128,44 @@ export default function CameraScreen({ onNavigateToGallery }: CameraScreenProps)
   };
 
   const detectCard = async () => {
-    if (isSamplingRef.current || !viewShotRef.current) return;
+    if (isSamplingRef.current || isRecordingRef.current || !cameraRef.current) return;
 
     isSamplingRef.current = true;
+    isRecordingRef.current = true;
+
+    let videoUri: string | null = null;
+    let frameUri: string | null = null;
 
     try {
-      if (!viewShotRef.current?.capture) {
+      const video = await cameraRef.current.recordAsync({
+        maxDuration: VIDEO_DURATION_MS / 1000,
+      });
+
+      if (!video || !video.uri) {
         isSamplingRef.current = false;
+        isRecordingRef.current = false;
         return;
       }
 
-      const snapshotUri = await viewShotRef.current.capture();
+      videoUri = video.uri;
 
-      if (!snapshotUri) {
+      const thumbnail = await VideoThumbnails.getThumbnailAsync(videoUri, {
+        time: THUMBNAIL_TIME_MS,
+        quality: 0.3,
+      });
+
+      if (!thumbnail || !thumbnail.uri) {
         isSamplingRef.current = false;
+        isRecordingRef.current = false;
         return;
       }
+
+      frameUri = thumbnail.uri;
+
+      const capturedFrameUri = frameUri;
 
       Image.getSize(
-        snapshotUri,
+        capturedFrameUri,
         async (width, height) => {
           try {
             const roiX = (width * (1 - ROI_WIDTH_RATIO)) / 2;
@@ -148,8 +173,10 @@ export default function CameraScreen({ onNavigateToGallery }: CameraScreenProps)
             const roiWidth = width * ROI_WIDTH_RATIO;
             const roiHeight = height * ROI_HEIGHT_RATIO;
 
+            console.log('[DEBUG] Frame dimensions:', { width, height, roiX, roiY, roiWidth, roiHeight });
+
             const { edgeDensity, hash } = await processImageForDetection(
-              snapshotUri,
+              capturedFrameUri,
               roiX,
               roiY,
               roiWidth,
@@ -171,9 +198,9 @@ export default function CameraScreen({ onNavigateToGallery }: CameraScreenProps)
                 if (analysis.isPresent) {
                   stabilityCounterRef.current = 1;
                   detectionStateRef.current = 'CandidatePresent';
-                  updateDebugInfo('CandidatePresent', edgeDensity, analysis.hammingDistance, 1);
+                  updateDebugInfo('CandidatePresent', edgeDensity, analysis.hammingDistance, 1, capturedFrameUri);
                 } else {
-                  updateDebugInfo('Idle', edgeDensity, analysis.hammingDistance, 0);
+                  updateDebugInfo('Idle', edgeDensity, analysis.hammingDistance, 0, capturedFrameUri);
                 }
                 break;
 
@@ -182,18 +209,18 @@ export default function CameraScreen({ onNavigateToGallery }: CameraScreenProps)
                   stabilityCounterRef.current++;
                   if (stabilityCounterRef.current >= STABILITY_FRAMES_PRESENT) {
                     detectionStateRef.current = 'CaptureOnce';
-                    updateDebugInfo('CaptureOnce', edgeDensity, analysis.hammingDistance, stabilityCounterRef.current);
+                    updateDebugInfo('CaptureOnce', edgeDensity, analysis.hammingDistance, stabilityCounterRef.current, capturedFrameUri);
                     await captureHighQualityCard();
                     lastCapturedHashRef.current = hash;
                     detectionStateRef.current = 'WaitForChange';
                     stabilityCounterRef.current = 0;
                   } else {
-                    updateDebugInfo('CandidatePresent', edgeDensity, analysis.hammingDistance, stabilityCounterRef.current);
+                    updateDebugInfo('CandidatePresent', edgeDensity, analysis.hammingDistance, stabilityCounterRef.current, capturedFrameUri);
                   }
                 } else {
                   detectionStateRef.current = 'Idle';
                   stabilityCounterRef.current = 0;
-                  updateDebugInfo('Idle', edgeDensity, analysis.hammingDistance, 0);
+                  updateDebugInfo('Idle', edgeDensity, analysis.hammingDistance, 0, capturedFrameUri);
                 }
                 break;
 
@@ -201,39 +228,68 @@ export default function CameraScreen({ onNavigateToGallery }: CameraScreenProps)
                 if (!analysis.isPresent) {
                   detectionStateRef.current = 'Idle';
                   stabilityCounterRef.current = 0;
-                  updateDebugInfo('Idle', edgeDensity, analysis.hammingDistance, 0);
+                  updateDebugInfo('Idle', edgeDensity, analysis.hammingDistance, 0, capturedFrameUri);
                 } else if (analysis.hammingDistance >= HAMMING_THRESHOLD) {
                   stabilityCounterRef.current++;
                   if (stabilityCounterRef.current >= STABILITY_FRAMES_CHANGED) {
                     detectionStateRef.current = 'CaptureOnce';
-                    updateDebugInfo('CaptureOnce', edgeDensity, analysis.hammingDistance, stabilityCounterRef.current);
+                    updateDebugInfo('CaptureOnce', edgeDensity, analysis.hammingDistance, stabilityCounterRef.current, capturedFrameUri);
                     await captureHighQualityCard();
                     lastCapturedHashRef.current = hash;
                     detectionStateRef.current = 'WaitForChange';
                     stabilityCounterRef.current = 0;
                   } else {
-                    updateDebugInfo('WaitForChange', edgeDensity, analysis.hammingDistance, stabilityCounterRef.current);
+                    updateDebugInfo('WaitForChange', edgeDensity, analysis.hammingDistance, stabilityCounterRef.current, capturedFrameUri);
                   }
                 } else {
                   stabilityCounterRef.current = 0;
-                  updateDebugInfo('WaitForChange', edgeDensity, analysis.hammingDistance, 0);
+                  updateDebugInfo('WaitForChange', edgeDensity, analysis.hammingDistance, 0, capturedFrameUri);
                 }
                 break;
             }
           } catch (error) {
-            console.error('Error processing snapshot:', error);
+            console.error('Error processing frame:', error);
           } finally {
+            if (videoUri) {
+              try {
+                await FileSystem.deleteAsync(videoUri, { idempotent: true });
+              } catch (cleanupError) {
+                console.warn('Failed to delete video file:', cleanupError);
+              }
+            }
+            if (frameUri) {
+              try {
+                await FileSystem.deleteAsync(frameUri, { idempotent: true });
+              } catch (cleanupError) {
+                console.warn('Failed to delete frame file:', cleanupError);
+              }
+            }
             isSamplingRef.current = false;
+            isRecordingRef.current = false;
           }
         },
         (error) => {
-          console.error('Error getting image size:', error);
+          console.error('Error getting frame size:', error);
+          if (videoUri) {
+            FileSystem.deleteAsync(videoUri, { idempotent: true }).catch(() => {});
+          }
+          if (frameUri) {
+            FileSystem.deleteAsync(frameUri, { idempotent: true }).catch(() => {});
+          }
           isSamplingRef.current = false;
+          isRecordingRef.current = false;
         }
       );
     } catch (error) {
       console.error('Error in card detection:', error);
+      if (videoUri) {
+        FileSystem.deleteAsync(videoUri, { idempotent: true }).catch(() => {});
+      }
+      if (frameUri) {
+        FileSystem.deleteAsync(frameUri, { idempotent: true }).catch(() => {});
+      }
       isSamplingRef.current = false;
+      isRecordingRef.current = false;
     }
   };
 
@@ -281,35 +337,36 @@ export default function CameraScreen({ onNavigateToGallery }: CameraScreenProps)
 
   return (
     <View style={styles.container}>
-      <ViewShot
-        ref={viewShotRef}
-        options={{ format: 'jpg', quality: 0.3, result: 'tmpfile' }}
+      <CameraView
+        ref={cameraRef}
         style={styles.camera}
+        facing="back"
       >
-        <CameraView
-          ref={cameraRef}
-          style={styles.camera}
-          facing="back"
-        >
-          <View style={styles.overlay}>
-            <View style={styles.guideline} />
-            {debugMode && isScanning && (
-              <View style={styles.debugOverlay}>
-                <Text style={styles.debugText}>状態: {debugInfo.state}</Text>
-                <Text style={styles.debugText}>
-                  エッジ密度: {(debugInfo.edgeDensity * 100).toFixed(2)}%
-                </Text>
-                <Text style={styles.debugText}>
-                  ハミング距離: {debugInfo.hammingDistance}
-                </Text>
-                <Text style={styles.debugText}>
-                  安定性カウンタ: {debugInfo.stabilityCounter}
-                </Text>
-              </View>
-            )}
-          </View>
-        </CameraView>
-      </ViewShot>
+        <View style={styles.overlay}>
+          <View style={styles.guideline} />
+          {debugMode && isScanning && (
+            <View style={styles.debugOverlay}>
+              <Text style={styles.debugText}>状態: {debugInfo.state}</Text>
+              <Text style={styles.debugText}>
+                エッジ密度: {(debugInfo.edgeDensity * 100).toFixed(2)}%
+              </Text>
+              <Text style={styles.debugText}>
+                ハミング距離: {debugInfo.hammingDistance}
+              </Text>
+              <Text style={styles.debugText}>
+                安定性カウンタ: {debugInfo.stabilityCounter}
+              </Text>
+              {debugInfo.snapshotUri && (
+                <Image
+                  source={{ uri: debugInfo.snapshotUri }}
+                  style={{ width: 100, height: 100, marginTop: 5 }}
+                  resizeMode="contain"
+                />
+              )}
+            </View>
+          )}
+        </View>
+      </CameraView>
 
       <View style={styles.controls}>
         <View style={styles.debugToggle}>

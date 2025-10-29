@@ -15,6 +15,7 @@
       "supportsTablet": true,
       "infoPlist": {
         "NSCameraUsageDescription": "This app needs access to the camera to scan MTG cards.",
+        "NSMicrophoneUsageDescription": "This app needs microphone access for video recording during card detection.",
         "NSPhotoLibraryUsageDescription": "This app needs access to the photo library to save scanned card images.",
         "NSPhotoLibraryAddUsageDescription": "This app needs access to save scanned card images to your photo library."
       }
