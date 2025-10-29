@@ -7,8 +7,10 @@ import {
   Alert,
   Dimensions,
   Switch,
+  Image,
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import ViewShot from 'react-native-view-shot';
 import { detectCardEdges, cropAndCorrectPerspective } from '../utils/imageProcessing';
 import { saveCardImage } from '../utils/storage';
 import { processImageForDetection, analyzeCardPresenceAndChange } from '../utils/cardDetection';
@@ -43,6 +45,7 @@ export default function CameraScreen({ onNavigateToGallery }: CameraScreenProps)
   });
 
   const cameraRef = useRef<CameraView>(null);
+  const viewShotRef = useRef<ViewShot>(null);
   const detectionStateRef = useRef<DetectionState>('Idle');
   const lastCapturedHashRef = useRef<string | null>(null);
   const stabilityCounterRef = useRef(0);
@@ -119,101 +122,117 @@ export default function CameraScreen({ onNavigateToGallery }: CameraScreenProps)
   };
 
   const detectCard = async () => {
-    if (isSamplingRef.current || !cameraRef.current) return;
+    if (isSamplingRef.current || !viewShotRef.current) return;
 
     isSamplingRef.current = true;
 
     try {
-      const photo = await cameraRef.current.takePictureAsync({
-        quality: 0.2,
-        skipProcessing: true,
-      });
-
-      if (!photo || !photo.uri) {
+      if (!viewShotRef.current?.capture) {
         isSamplingRef.current = false;
         return;
       }
 
-      const roiX = (photo.width * (1 - ROI_WIDTH_RATIO)) / 2;
-      const roiY = (photo.height * (1 - ROI_HEIGHT_RATIO)) / 2;
-      const roiWidth = photo.width * ROI_WIDTH_RATIO;
-      const roiHeight = photo.height * ROI_HEIGHT_RATIO;
+      const snapshotUri = await viewShotRef.current.capture();
 
-      const { edgeDensity, hash } = await processImageForDetection(
-        photo.uri,
-        roiX,
-        roiY,
-        roiWidth,
-        roiHeight
-      );
-
-      const analysis = analyzeCardPresenceAndChange(
-        edgeDensity,
-        hash,
-        lastCapturedHashRef.current,
-        EDGE_DENSITY_THRESHOLD,
-        HAMMING_THRESHOLD
-      );
-
-      const currentState = detectionStateRef.current;
-
-      switch (currentState) {
-        case 'Idle':
-          if (analysis.isPresent) {
-            stabilityCounterRef.current = 1;
-            detectionStateRef.current = 'CandidatePresent';
-            updateDebugInfo('CandidatePresent', edgeDensity, analysis.hammingDistance, 1);
-          } else {
-            updateDebugInfo('Idle', edgeDensity, analysis.hammingDistance, 0);
-          }
-          break;
-
-        case 'CandidatePresent':
-          if (analysis.isPresent) {
-            stabilityCounterRef.current++;
-            if (stabilityCounterRef.current >= STABILITY_FRAMES_PRESENT) {
-              detectionStateRef.current = 'CaptureOnce';
-              updateDebugInfo('CaptureOnce', edgeDensity, analysis.hammingDistance, stabilityCounterRef.current);
-              await captureHighQualityCard();
-              lastCapturedHashRef.current = hash;
-              detectionStateRef.current = 'WaitForChange';
-              stabilityCounterRef.current = 0;
-            } else {
-              updateDebugInfo('CandidatePresent', edgeDensity, analysis.hammingDistance, stabilityCounterRef.current);
-            }
-          } else {
-            detectionStateRef.current = 'Idle';
-            stabilityCounterRef.current = 0;
-            updateDebugInfo('Idle', edgeDensity, analysis.hammingDistance, 0);
-          }
-          break;
-
-        case 'WaitForChange':
-          if (!analysis.isPresent) {
-            detectionStateRef.current = 'Idle';
-            stabilityCounterRef.current = 0;
-            updateDebugInfo('Idle', edgeDensity, analysis.hammingDistance, 0);
-          } else if (analysis.hammingDistance >= HAMMING_THRESHOLD) {
-            stabilityCounterRef.current++;
-            if (stabilityCounterRef.current >= STABILITY_FRAMES_CHANGED) {
-              detectionStateRef.current = 'CaptureOnce';
-              updateDebugInfo('CaptureOnce', edgeDensity, analysis.hammingDistance, stabilityCounterRef.current);
-              await captureHighQualityCard();
-              lastCapturedHashRef.current = hash;
-              detectionStateRef.current = 'WaitForChange';
-              stabilityCounterRef.current = 0;
-            } else {
-              updateDebugInfo('WaitForChange', edgeDensity, analysis.hammingDistance, stabilityCounterRef.current);
-            }
-          } else {
-            stabilityCounterRef.current = 0;
-            updateDebugInfo('WaitForChange', edgeDensity, analysis.hammingDistance, 0);
-          }
-          break;
+      if (!snapshotUri) {
+        isSamplingRef.current = false;
+        return;
       }
+
+      Image.getSize(
+        snapshotUri,
+        async (width, height) => {
+          try {
+            const roiX = (width * (1 - ROI_WIDTH_RATIO)) / 2;
+            const roiY = (height * (1 - ROI_HEIGHT_RATIO)) / 2;
+            const roiWidth = width * ROI_WIDTH_RATIO;
+            const roiHeight = height * ROI_HEIGHT_RATIO;
+
+            const { edgeDensity, hash } = await processImageForDetection(
+              snapshotUri,
+              roiX,
+              roiY,
+              roiWidth,
+              roiHeight
+            );
+
+            const analysis = analyzeCardPresenceAndChange(
+              edgeDensity,
+              hash,
+              lastCapturedHashRef.current,
+              EDGE_DENSITY_THRESHOLD,
+              HAMMING_THRESHOLD
+            );
+
+            const currentState = detectionStateRef.current;
+
+            switch (currentState) {
+              case 'Idle':
+                if (analysis.isPresent) {
+                  stabilityCounterRef.current = 1;
+                  detectionStateRef.current = 'CandidatePresent';
+                  updateDebugInfo('CandidatePresent', edgeDensity, analysis.hammingDistance, 1);
+                } else {
+                  updateDebugInfo('Idle', edgeDensity, analysis.hammingDistance, 0);
+                }
+                break;
+
+              case 'CandidatePresent':
+                if (analysis.isPresent) {
+                  stabilityCounterRef.current++;
+                  if (stabilityCounterRef.current >= STABILITY_FRAMES_PRESENT) {
+                    detectionStateRef.current = 'CaptureOnce';
+                    updateDebugInfo('CaptureOnce', edgeDensity, analysis.hammingDistance, stabilityCounterRef.current);
+                    await captureHighQualityCard();
+                    lastCapturedHashRef.current = hash;
+                    detectionStateRef.current = 'WaitForChange';
+                    stabilityCounterRef.current = 0;
+                  } else {
+                    updateDebugInfo('CandidatePresent', edgeDensity, analysis.hammingDistance, stabilityCounterRef.current);
+                  }
+                } else {
+                  detectionStateRef.current = 'Idle';
+                  stabilityCounterRef.current = 0;
+                  updateDebugInfo('Idle', edgeDensity, analysis.hammingDistance, 0);
+                }
+                break;
+
+              case 'WaitForChange':
+                if (!analysis.isPresent) {
+                  detectionStateRef.current = 'Idle';
+                  stabilityCounterRef.current = 0;
+                  updateDebugInfo('Idle', edgeDensity, analysis.hammingDistance, 0);
+                } else if (analysis.hammingDistance >= HAMMING_THRESHOLD) {
+                  stabilityCounterRef.current++;
+                  if (stabilityCounterRef.current >= STABILITY_FRAMES_CHANGED) {
+                    detectionStateRef.current = 'CaptureOnce';
+                    updateDebugInfo('CaptureOnce', edgeDensity, analysis.hammingDistance, stabilityCounterRef.current);
+                    await captureHighQualityCard();
+                    lastCapturedHashRef.current = hash;
+                    detectionStateRef.current = 'WaitForChange';
+                    stabilityCounterRef.current = 0;
+                  } else {
+                    updateDebugInfo('WaitForChange', edgeDensity, analysis.hammingDistance, stabilityCounterRef.current);
+                  }
+                } else {
+                  stabilityCounterRef.current = 0;
+                  updateDebugInfo('WaitForChange', edgeDensity, analysis.hammingDistance, 0);
+                }
+                break;
+            }
+          } catch (error) {
+            console.error('Error processing snapshot:', error);
+          } finally {
+            isSamplingRef.current = false;
+          }
+        },
+        (error) => {
+          console.error('Error getting image size:', error);
+          isSamplingRef.current = false;
+        }
+      );
     } catch (error) {
       console.error('Error in card detection:', error);
-    } finally {
       isSamplingRef.current = false;
     }
   };
@@ -262,29 +281,35 @@ export default function CameraScreen({ onNavigateToGallery }: CameraScreenProps)
 
   return (
     <View style={styles.container}>
-      <CameraView
-        ref={cameraRef}
+      <ViewShot
+        ref={viewShotRef}
+        options={{ format: 'jpg', quality: 0.3, result: 'tmpfile' }}
         style={styles.camera}
-        facing="back"
       >
-        <View style={styles.overlay}>
-          <View style={styles.guideline} />
-          {debugMode && isScanning && (
-            <View style={styles.debugOverlay}>
-              <Text style={styles.debugText}>状態: {debugInfo.state}</Text>
-              <Text style={styles.debugText}>
-                エッジ密度: {(debugInfo.edgeDensity * 100).toFixed(2)}%
-              </Text>
-              <Text style={styles.debugText}>
-                ハミング距離: {debugInfo.hammingDistance}
-              </Text>
-              <Text style={styles.debugText}>
-                安定性カウンタ: {debugInfo.stabilityCounter}
-              </Text>
-            </View>
-          )}
-        </View>
-      </CameraView>
+        <CameraView
+          ref={cameraRef}
+          style={styles.camera}
+          facing="back"
+        >
+          <View style={styles.overlay}>
+            <View style={styles.guideline} />
+            {debugMode && isScanning && (
+              <View style={styles.debugOverlay}>
+                <Text style={styles.debugText}>状態: {debugInfo.state}</Text>
+                <Text style={styles.debugText}>
+                  エッジ密度: {(debugInfo.edgeDensity * 100).toFixed(2)}%
+                </Text>
+                <Text style={styles.debugText}>
+                  ハミング距離: {debugInfo.hammingDistance}
+                </Text>
+                <Text style={styles.debugText}>
+                  安定性カウンタ: {debugInfo.stabilityCounter}
+                </Text>
+              </View>
+            )}
+          </View>
+        </CameraView>
+      </ViewShot>
 
       <View style={styles.controls}>
         <View style={styles.debugToggle}>
