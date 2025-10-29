@@ -1,20 +1,29 @@
+import React, { useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, View, SafeAreaView } from 'react-native';
+import CameraScreen from './src/screens/CameraScreen';
+import GalleryScreen from './src/screens/GalleryScreen';
+
+type Screen = 'camera' | 'gallery';
 
 export default function App() {
+  const [currentScreen, setCurrentScreen] = useState<Screen>('camera');
+
   return (
-    <View style={styles.container}>
-      <Text>Open up App.tsx to start working on your app!</Text>
-      <StatusBar style="auto" />
-    </View>
+    <SafeAreaView style={styles.container}>
+      <StatusBar style="light" />
+      {currentScreen === 'camera' ? (
+        <CameraScreen onNavigateToGallery={() => setCurrentScreen('gallery')} />
+      ) : (
+        <GalleryScreen onNavigateToCamera={() => setCurrentScreen('camera')} />
+      )}
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#fff',
-    alignItems: 'center',
-    justifyContent: 'center',
+    backgroundColor: '#000',
   },
 });

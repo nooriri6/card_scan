@@ -13,7 +13,12 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSCameraUsageDescription": "This app needs access to the camera to scan MTG cards.",
+        "NSPhotoLibraryUsageDescription": "This app needs access to the photo library to save scanned card images.",
+        "NSPhotoLibraryAddUsageDescription": "This app needs access to save scanned card images to your photo library."
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -21,10 +26,32 @@
         "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "CAMERA",
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE",
+        "READ_MEDIA_IMAGES"
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow $(PRODUCT_NAME) to access your camera to scan MTG cards."
+        }
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Allow $(PRODUCT_NAME) to access your photos to save scanned card images.",
+          "savePhotosPermission": "Allow $(PRODUCT_NAME) to save scanned card images.",
+          "isAccessMediaLocationEnabled": true
+        }
+      ]
+    ]
   }
 }
