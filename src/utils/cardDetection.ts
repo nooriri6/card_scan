@@ -1,5 +1,6 @@
 import jpeg from 'jpeg-js';
 import * as ImageManipulator from 'expo-image-manipulator';
+import { toByteArray } from 'base64-js';
 
 export interface DetectionResult {
   isPresent: boolean;
@@ -9,8 +10,9 @@ export interface DetectionResult {
 }
 
 export const decodeJpegBase64ToGray = (base64: string): Uint8Array => {
-  const buffer = Buffer.from(base64, 'base64');
-  const imageData = jpeg.decode(buffer, { useTArray: true });
+  const cleanBase64 = base64.includes(',') ? base64.split(',')[1] : base64;
+  const bytes = toByteArray(cleanBase64);
+  const imageData = jpeg.decode(bytes, { useTArray: true });
   const { width, height, data } = imageData;
   
   const grayData = new Uint8Array(width * height);
