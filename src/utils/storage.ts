@@ -1,4 +1,4 @@
-import * as FileSystem from 'expo-file-system/build/legacy/FileSystem';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as MediaLibrary from 'expo-media-library';
 import { CardImage } from '../types';
 
